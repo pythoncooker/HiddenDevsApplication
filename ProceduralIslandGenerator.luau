@@ -1,9 +1,8 @@
 -- Discord: big4kcrackin_4s | Roblox: THEDABLOL35
 
-local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 
-local Terrain = Workspace.Terrain
+local Terrain = workspace.Terrain
 
 local CONFIG = {
 	Seed = math.random(1, 2147483646),
@@ -29,16 +28,15 @@ local MAT = {
 }
 
 -- remove old island before building a new one
-local old = Workspace:FindFirstChild("ProceduralIsland")
+local old = workspace:FindFirstChild("ProceduralIsland")
 if old then
 	old:Destroy()
 end
 
 local genFolder = Instance.new("Folder")
 genFolder.Name = "ProceduralIsland"
-genFolder.Parent = Workspace
+genFolder.Parent = workspace
 
--- changing the seed changes the terrain layout
 local rng = Random.new(CONFIG.Seed)
 print("Island seed:", CONFIG.Seed)
 
@@ -102,7 +100,7 @@ end
 local function surfaceMaterial(biome, height)
 	if biome == "Beach" then return MAT.Sand end
 	if biome == "Snow" then return MAT.Snow end
-	if height > 39 then return MAT.Rock end -- high ground reads as rock no matter the biome
+	if height > 39 then return MAT.Rock end -- steep high ground reads as rock no matter the biome
 	if biome == "Dry" then return MAT.Ground end
 	return MAT.Grass
 end
@@ -121,8 +119,7 @@ local function createPart(name, size, cf, material, color)
 	return p
 end
 
--- get the real surface position instead of using the generated height
--- keeps trees rocks and flowers on the terrain
+-- raycast the finished terrain so decoration sit on the surface
 local function groundPos(x, z)
 	local origin = Vector3.new(x, 180, z)
 	local dir = Vector3.new(0, -300, 0)
@@ -131,15 +128,14 @@ local function groundPos(x, z)
 	params.FilterType = Enum.RaycastFilterType.Include
 	params.FilterDescendantsInstances = { Terrain }
 
-	local hit = Workspace:Raycast(origin, dir, params)
+	local hit = workspace:Raycast(origin, dir, params)
 	if hit then
 		return hit.Position, hit.Normal
 	end
 	return nil, nil
 end
 
--- normal ground can use its surface normal
---steep ground gets straight up direction instead
+--avoid tilting decorations too much on steep terrain
 local function safeUp(normal)
 	if normal.Y < 0.65 then
 		return Vector3.yAxis
@@ -269,8 +265,7 @@ local function createSpawn()
 	spawn.Parent = genFolder
 end
 
--- finish the terrain before placing decorations
--- or some raycasts could run before the ground exists
+-- generate terrain first because decorations use raycasts to find the surface
 local function generateIsland()
 	Terrain:Clear()
 

@@ -102,7 +102,7 @@ end
 local function surfaceMaterial(biome, height)
 	if biome == "Beach" then return MAT.Sand end
 	if biome == "Snow" then return MAT.Snow end
-	if height > 39 then return MAT.Rock end -- steep high ground reads as rock no matter the biome
+	if height > 39 then return MAT.Rock end -- high ground reads as rock no matter the biome
 	if biome == "Dry" then return MAT.Ground end
 	return MAT.Grass
 end
@@ -139,7 +139,7 @@ local function groundPos(x, z)
 end
 
 -- normal ground can use its surface normal
---steep ground gets straight-up direction instead
+--steep ground gets straight up direction instead
 local function safeUp(normal)
 	if normal.Y < 0.65 then
 		return Vector3.yAxis

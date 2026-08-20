@@ -40,6 +40,7 @@ genFolder.Parent = workspace
 local rng = Random.new(CONFIG.Seed)
 print("Island seed:", CONFIG.Seed)
 
+-- smooths the value so terrain transitions dont look too sharp
 local function smoothstep(v)
 	v = math.clamp(v, 0, 1)
 	return v * v * (3 - 2 * v)
@@ -49,8 +50,7 @@ local function dist(x, z)
 	return math.sqrt(x * x + z * z)
 end
 
--- 1 in the middle 0 at the edge
--- this gives the island its shape
+-- fades terrain as it gets closer to the edge
 local function islandMask(x, z)
 	local d = dist(x, z)
 	local edge = d / CONFIG.IslandRadius

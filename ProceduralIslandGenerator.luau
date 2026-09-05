@@ -1,98 +1,105 @@
 -- Discord: big4kcrackin_4s | Roblox: THEDABLOL35
 
 local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
 
 local Terrain = workspace.Terrain
 
-local CONFIG = {
+local CONFIG = table.freeze({
 	Seed = math.random(1, 2147483646),
-	CellSize = 8,
-	GridRadius = 18,
-	BaseHeight = 22,
-	MaxHeight = 36,
-	IslandRadius = 132,
-	WaterLevel = 0,
-	TreeChance = 0.10,
-	RockChance = 0.16,
-	DetailChance = 0.24,
-	ChunkSize = 6, -- yield after 6 rows
-}
+	Terrain = table.freeze({
+		CellSize = 8, GridRadius = 18, ChunkSize = 6,
+		BaseHeight = 22, MaxHeight = 36, HeightFloor = -42,
+		IslandRadius = 132, WaterLevel = 0, WaterSizeMultiplier = 2.6,
+		WaterThickness = 6, WaterDepthOffset = 3, CoastlineDropoff = 74,
+		RockColumnBase = 46, TopLayerMaxThickness = 5,
+	}),
+	Noise = table.freeze({
+		BigScale = 0.018, MidScale = 0.052, SmallScale = 0.14,
+		BigWeight = 0.62, MidWeight = 0.27, SmallWeight = 0.11,
+		MidSeedOffset = 50, SmallSeedOffset = 100,
+		MoistureScale = 0.03, MoistureSeedOffset = 200,
+		TemperatureScale = 0.022, TemperatureSeedOffset = 400,
+	}),
+	Biome = table.freeze({
+		BeachHeightMax = 7, SnowHeightMin = 46, RockHeightMin = 39,
+		ForestMoistureMin = 0.35, DryTemperatureMin = 0.42,
+	}),
+	Decoration = table.freeze({
+		TreeChance = 0.10, RockChance = 0.16, FlowerChance = 0.24,
+		MinDecorationHeight = 4, EdgeExclusionFactor = 0.92,
+		RaycastUpStart = 180, RaycastDownDistance = 300, MaxWalkableNormalY = 0.65,
+	}),
+})
 
-local MAT = {
-	Grass = Enum.Material.Grass,
-	Ground = Enum.Material.Ground,
-	Rock = Enum.Material.Rock,
-	Sand = Enum.Material.Sand,
-	Snow = Enum.Material.Snow,
-	Water = Enum.Material.Water,
-}
+-- this stops a bad number from breaking things later on
+assert(CONFIG.Terrain.GridRadius > 0, "GridRadius must be positive")
+assert(CONFIG.Terrain.IslandRadius > 0, "IslandRadius must be positive")
 
--- remove old island before building a new one
+-- keeps all the materials in one spot
+local MAT = table.freeze({
+	Grass = Enum.Material.Grass, Ground = Enum.Material.Ground, Rock = Enum.Material.Rock,
+	Sand = Enum.Material.Sand, Snow = Enum.Material.Snow, Water = Enum.Material.Water,
+})
+
+-- delete the old island first so we dont end up with two
 local old = workspace:FindFirstChild("ProceduralIsland")
-if old then
-	old:Destroy()
-end
+if old then old:Destroy() end
 
+-- puts everything inside one folder so the whole island can move or get deleted as one thing
 local genFolder = Instance.new("Folder")
 genFolder.Name = "ProceduralIsland"
 genFolder.Parent = workspace
 
+-- this rng is just for props so it stays separate from the terrain noise
 local rng = Random.new(CONFIG.Seed)
 print("Island seed:", CONFIG.Seed)
 
--- smooths the value so terrain transitions dont look too sharp
+-- makes the number curve nice instead of jumping straight from 0 to 1
 local function smoothstep(v)
 	v = math.clamp(v, 0, 1)
 	return v * v * (3 - 2 * v)
 end
 
-local function dist(x, z)
+local function distance2D(x, z)
 	return math.sqrt(x * x + z * z)
 end
 
--- fades terrain as it gets closer to the edge
+-- makes the land fade out the closer it gets to the edge
 local function islandMask(x, z)
-	local d = dist(x, z)
-	local edge = d / CONFIG.IslandRadius
+	local edge = distance2D(x, z) / CONFIG.Terrain.IslandRadius
 	return math.clamp(1 - smoothstep(edge), 0, 1)
 end
 
--- each layer adds a different amount of detail
--- the big noise has the biggest effect on the final height
+-- mixes three layers of noise together big bumps and small bumps
 local function heightNoise(x, z)
-	local big = math.noise(x * 0.018, z * 0.018, CONFIG.Seed)
-	local mid = math.noise(x * 0.052, z * 0.052, CONFIG.Seed + 50)
-	local small = math.noise(x * 0.14, z * 0.14, CONFIG.Seed + 100)
-	return big * 0.62 + mid * 0.27 + small * 0.11
+	local n = CONFIG.Noise
+	local big = math.noise(x * n.BigScale, z * n.BigScale, CONFIG.Seed)
+	local mid = math.noise(x * n.MidScale, z * n.MidScale, CONFIG.Seed + n.MidSeedOffset)
+	local small = math.noise(x * n.SmallScale, z * n.SmallScale, CONFIG.Seed + n.SmallSeedOffset)
+	return big * n.BigWeight + mid * n.MidWeight + small * n.SmallWeight
 end
 
 local function terrainHeight(x, z)
+	local t = CONFIG.Terrain
 	local mask = islandMask(x, z)
-	local n = heightNoise(x, z) -- -1 to 1
-	local nh = n * (CONFIG.MaxHeight + 8) - 8 -- stretched into a usable height range
-	local edgeDrop = (1 - mask) * 74 -- pulls coastline down toward the water
-	local h = CONFIG.BaseHeight + nh * mask - edgeDrop
-	return math.max(h, -42)
+	-- the noise comes out small so we stretch it way up first
+	local stretchedHeight = heightNoise(x, z) * (t.MaxHeight + 8) - 8
+	local edgeDrop = (1 - mask) * t.CoastlineDropoff
+	return math.max(t.BaseHeight + stretchedHeight * mask - edgeDrop, t.HeightFloor)
 end
 
--- use the height first then noise for moisture and temperature
--- different places of the island get different biomes
+-- checks height first then checks how wet or hot it is for the rest
 local function getBiome(height, x, z)
-	local moisture = math.noise(x * 0.03, z * 0.03, CONFIG.Seed + 200)
-	local temp = math.noise(x * 0.022, z * 0.022, CONFIG.Seed + 400)
+	local b, n = CONFIG.Biome, CONFIG.Noise
+	if height < b.BeachHeightMax then return "Beach" end
+	if height > b.SnowHeightMin then return "Snow" end
 
-	if height < 7 then
-		return "Beach"
-	end
-	if height > 46 then
-		return "Snow"
-	end
-	if moisture > 0.35 then
-		return "Forest"
-	end
-	if temp > 0.42 then
-		return "Dry"
-	end
+	local moisture = math.noise(x * n.MoistureScale, z * n.MoistureScale, CONFIG.Seed + n.MoistureSeedOffset)
+	if moisture > b.ForestMoistureMin then return "Forest" end
+
+	local temperature = math.noise(x * n.TemperatureScale, z * n.TemperatureScale, CONFIG.Seed + n.TemperatureSeedOffset)
+	if temperature > b.DryTemperatureMin then return "Dry" end
 
 	return "Plains"
 end
@@ -100,215 +107,215 @@ end
 local function surfaceMaterial(biome, height)
 	if biome == "Beach" then return MAT.Sand end
 	if biome == "Snow" then return MAT.Snow end
-	if height > 39 then return MAT.Rock end -- steep high ground reads as rock no matter the biome
+	if height > CONFIG.Biome.RockHeightMin then return MAT.Rock end
 	if biome == "Dry" then return MAT.Ground end
 	return MAT.Grass
 end
 
-local function createPart(name, size, cf, material, color)
-	local p = Instance.new("Part")
-	p.Name = name
-	p.Size = size
-	p.CFrame = cf
-	p.Material = material
-	p.Color = color
-	p.Anchored = true
-	p.TopSurface = Enum.SurfaceType.Smooth
-	p.BottomSurface = Enum.SurfaceType.Smooth
-	p.Parent = genFolder
-	return p
-end
+-- this makes the ray only able to hit the terrain and nothing else
+local terrainRaycastParams = RaycastParams.new()
+terrainRaycastParams.FilterType = Enum.RaycastFilterType.Include
+terrainRaycastParams.FilterDescendantsInstances = { Terrain }
 
--- raycast the finished terrain so decoration sit on the surface
+-- shoots a ray straight down to find the ground spot
 local function groundPos(x, z)
-	local origin = Vector3.new(x, 180, z)
-	local dir = Vector3.new(0, -300, 0)
-
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = { Terrain }
-
-	local hit = workspace:Raycast(origin, dir, params)
-	if hit then
-		return hit.Position, hit.Normal
-	end
-	return nil, nil
+	local d = CONFIG.Decoration
+	local hit = workspace:Raycast(Vector3.new(x, d.RaycastUpStart, z), Vector3.new(0, -d.RaycastDownDistance, 0), terrainRaycastParams)
+	if not hit then return nil, nil end
+	return hit.Position, hit.Normal
 end
 
---avoid tilting decorations too much on steep terrain
-local function safeUp(normal)
-	if normal.Y < 0.65 then
-		return Vector3.yAxis
-	end
+-- one class makes every prop type so rock tree and flower all share the same helpers
+local Decoration = {}
+Decoration.__index = Decoration
+
+-- we only make one of these and it just remembers the folder and the rng to use
+function Decoration.new(folder, decorationRng)
+	return setmetatable({ Folder = folder, RNG = decorationRng }, Decoration)
+end
+
+function Decoration:CreatePart(name, size, cframe, material, color)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = cframe
+	part.Material = material
+	part.Color = color
+	part.Anchored = true
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = self.Folder
+
+	CollectionService:AddTag(part, name) -- lets other scripts find this part later
+	part:SetAttribute("DecorationType", name)
+
+	return part
+end
+
+-- stops stuff from leaning too far over on steep ground
+function Decoration:SafeUp(normal)
+	if normal.Y < CONFIG.Decoration.MaxWalkableNormalY then return Vector3.yAxis end
 	return normal
 end
 
-local function makeRock(pos, normal, scale)
-	local up = safeUp(normal)
-	local yaw = rng:NextNumber(0, math.pi * 2)
-	local tilt = CFrame.fromAxisAngle(Vector3.xAxis, rng:NextNumber(-0.24, 0.24))
-	local rot = CFrame.Angles(0, yaw, 0) * tilt
-	local offset = up * (scale.Y * 0.33)
+function Decoration:SpawnRock(pos, normal)
+	local up, rng = self:SafeUp(normal), self.RNG
+	local scale = Vector3.new(rng:NextNumber(2, 5), rng:NextNumber(1.5, 4), rng:NextNumber(2, 5))
+	local rotation = CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0) * CFrame.fromAxisAngle(Vector3.xAxis, rng:NextNumber(-0.24, 0.24))
+	local offset = up * (scale.Y * 0.33) -- lifts it up so it doesnt sink into the ground
 
-	local rock = createPart("Rock", scale, CFrame.new(pos + offset) * rot, MAT.Rock, Color3.fromRGB(91, 89, 83))
+	local rock = self:CreatePart("Rock", scale, CFrame.new(pos + offset) * rotation, MAT.Rock, Color3.fromRGB(91, 89, 83))
 	rock.Shape = Enum.PartType.Ball
-	rock:SetAttribute("DecorationType", "Rock")
 end
 
-local function makeFlower(pos, normal)
-	local up = safeUp(normal)
-	local colors = {
-		Color3.fromRGB(255, 99, 156),
-		Color3.fromRGB(255, 225, 88),
-		Color3.fromRGB(150, 119, 255),
-	}
+-- lives out here since every flower shares the same colors
+local FLOWER_COLORS = table.freeze({ Color3.fromRGB(255, 99, 156), Color3.fromRGB(255, 225, 88), Color3.fromRGB(150, 119, 255) })
 
-	local stem = createPart("FlowerStem", Vector3.new(0.16, 1.2, 0.16), CFrame.new(pos + up * 0.6), MAT.Grass, Color3.fromRGB(45, 130, 54))
-	local bloom = createPart("FlowerBloom", Vector3.new(0.7, 0.7, 0.7), CFrame.new(pos + up * 1.25), Enum.Material.Neon, colors[rng:NextInteger(1, #colors)])
+function Decoration:SpawnFlower(pos, normal)
+	local up, rng = self:SafeUp(normal), self.RNG
+	self:CreatePart("FlowerStem", Vector3.new(0.16, 1.2, 0.16), CFrame.new(pos + up * 0.6), MAT.Grass, Color3.fromRGB(45, 130, 54))
+
+	-- neon makes the flower glow so it still shows up in the shade
+	local bloom = self:CreatePart("FlowerBloom", Vector3.new(0.7, 0.7, 0.7), CFrame.new(pos + up * 1.25), Enum.Material.Neon, FLOWER_COLORS[rng:NextInteger(1, #FLOWER_COLORS)])
 	bloom.Shape = Enum.PartType.Ball
-
-	stem:SetAttribute("DecorationType", "Flower")
-	bloom:SetAttribute("DecorationType", "Flower")
 end
 
-local function makeTree(pos, normal, scale)
-	local up = safeUp(normal)
-	local trunkH = rng:NextNumber(7, 12) * scale
-	local trunkW = rng:NextNumber(1.2, 1.8) * scale
-	local trunkCenter = pos + up * (trunkH * 0.5)
+function Decoration:SpawnTree(pos, normal, scaleFactor)
+	local up, rng = self:SafeUp(normal), self.RNG
+	local trunkHeight = rng:NextNumber(7, 12) * scaleFactor
+	local trunkWidth = rng:NextNumber(1.2, 1.8) * scaleFactor
 
-	local trunk = createPart("TreeTrunk", Vector3.new(trunkW, trunkH, trunkW), CFrame.new(trunkCenter), Enum.Material.Wood, Color3.fromRGB(90, 57, 34))
+	local trunk = self:CreatePart("TreeTrunk", Vector3.new(trunkWidth, trunkHeight, trunkWidth), CFrame.new(pos + up * (trunkHeight * 0.5)), Enum.Material.Wood, Color3.fromRGB(90, 57, 34))
 	trunk.Shape = Enum.PartType.Cylinder
-	trunk.CFrame *= CFrame.Angles(0, 0, math.rad(90)) -- cylinder lays on its side default so rotate it upright
+	trunk.CFrame *= CFrame.Angles(0, 0, math.rad(90)) -- the cylinder lies on its side so we stand it up
 
-	local crownCenter = pos + up * (trunkH * 0.95)
-	local crownSize = rng:NextNumber(6, 9) * scale
+	local crownCenter = pos + up * (trunkHeight * 0.95)
+	local crownSize = rng:NextNumber(6, 9) * scaleFactor
 
-	--small offset spheres make one larger canopy
+	-- three balls placed in a circle look like one bumpy tree top
 	for i = 1, 3 do
 		local angle = (i / 3) * math.pi * 2
-		local side = Vector3.new(math.cos(angle), 0, math.sin(angle))
-		local offset = side * crownSize * 0.25 + up * rng:NextNumber(-0.4, 1.2)
-
-		local leaf = createPart(
-			"TreeLeaves",
-			Vector3.new(crownSize, crownSize, crownSize),
-			CFrame.new(crownCenter + offset),
-			MAT.Grass,
-			Color3.fromRGB(rng:NextInteger(40, 64), rng:NextInteger(115, 155), rng:NextInteger(48, 72))
-		)
+		local offset = Vector3.new(math.cos(angle), 0, math.sin(angle)) * crownSize * 0.25 + up * rng:NextNumber(-0.4, 1.2)
+		local leafColor = Color3.fromRGB(rng:NextInteger(40, 64), rng:NextInteger(115, 155), rng:NextInteger(48, 72))
+		local leaf = self:CreatePart("TreeLeaves", Vector3.new(crownSize, crownSize, crownSize), CFrame.new(crownCenter + offset), MAT.Grass, leafColor)
 		leaf.Shape = Enum.PartType.Ball
-		leaf:SetAttribute("DecorationType", "Tree")
 	end
-
-	trunk:SetAttribute("DecorationType", "Tree")
 end
 
---build the column with rock first
--- the top layer is changed to match the biome
+-- fills in rock first then adds a thin top layer for the biome
 local function createTerrainCell(x, z)
+	local t = CONFIG.Terrain
 	local height = terrainHeight(x, z)
 	local biome = getBiome(height, x, z)
-	local material = surfaceMaterial(biome, height)
 
-	local blockHeight = math.max(height + 46, 3)
-	local blockCenter = Vector3.new(x, -46 + blockHeight * 0.5, z)
-	Terrain:FillBlock(CFrame.new(blockCenter), Vector3.new(CONFIG.CellSize, blockHeight, CONFIG.CellSize), MAT.Rock)
+	-- the rock always goes down deep enough so it still reaches under the water near the coast
+	local blockHeight = math.max(height + t.RockColumnBase, 3)
+	Terrain:FillBlock(CFrame.new(x, -t.RockColumnBase + blockHeight * 0.5, z), Vector3.new(t.CellSize, blockHeight, t.CellSize), MAT.Rock)
 
-	local topThickness = math.min(5, blockHeight)
-	local topCenter = Vector3.new(x, height - topThickness * 0.5, z)
-	Terrain:FillBlock(CFrame.new(topCenter), Vector3.new(CONFIG.CellSize, topThickness, CONFIG.CellSize), material)
+	local topThickness = math.min(t.TopLayerMaxThickness, blockHeight)
+	Terrain:FillBlock(CFrame.new(x, height - topThickness * 0.5, z), Vector3.new(t.CellSize, topThickness, t.CellSize), surfaceMaterial(biome, height))
 
 	return height, biome
 end
 
-local function decorateCell(x, z, height, biome)
-	if height < 4 then return end -- keep props off anything near or under the water
+local function decorateCell(x, z, height, biome, decoration, stats)
+	local d = CONFIG.Decoration
+	if height < d.MinDecorationHeight then return end
 
 	local pos, normal = groundPos(x, z)
 	if not pos then return end
 
-	if biome == "Forest" and rng:NextNumber() <= CONFIG.TreeChance then
-		makeTree(pos, normal, rng:NextNumber(0.8, 1.25))
-		return
-	end
-
-	if rng:NextNumber() <= CONFIG.RockChance then
-		local scale = Vector3.new(rng:NextNumber(2, 5), rng:NextNumber(1.5, 4), rng:NextNumber(2, 5))
-		makeRock(pos, normal, scale)
-		return
-	end
-
-	if biome == "Plains" and rng:NextNumber() <= CONFIG.DetailChance then
-		makeFlower(pos, normal)
+	-- only one prop can spawn on each spot
+	if biome == "Forest" and rng:NextNumber() <= d.TreeChance then
+		decoration:SpawnTree(pos, normal, rng:NextNumber(0.8, 1.25))
+		stats.DecorationCount += 1
+	elseif rng:NextNumber() <= d.RockChance then
+		decoration:SpawnRock(pos, normal)
+		stats.DecorationCount += 1
+	elseif biome == "Plains" and rng:NextNumber() <= d.FlowerChance then
+		decoration:SpawnFlower(pos, normal)
+		stats.DecorationCount += 1
 	end
 end
 
 local function createWater()
-	local size = CONFIG.IslandRadius * 2.6
-	local center = Vector3.new(0, CONFIG.WaterLevel - 3, 0)
-	Terrain:FillBlock(CFrame.new(center), Vector3.new(size, 6, size), MAT.Water)
+	local t = CONFIG.Terrain
+	local size = t.IslandRadius * t.WaterSizeMultiplier
+	Terrain:FillBlock(CFrame.new(0, t.WaterLevel - t.WaterDepthOffset, 0), Vector3.new(size, t.WaterThickness, size), MAT.Water)
 end
 
 local function createSpawn()
 	local pos, normal = groundPos(0, 0)
-	if not pos then return end
+	if not pos then return nil end
+	local up = normal.Y >= CONFIG.Decoration.MaxWalkableNormalY and normal or Vector3.yAxis
 
 	local spawn = Instance.new("SpawnLocation")
 	spawn.Name = "IslandSpawn"
 	spawn.Size = Vector3.new(12, 1, 12)
-	spawn.Position = pos + safeUp(normal) * 1
+	spawn.Position = pos + up * 1
 	spawn.Material = Enum.Material.WoodPlanks
 	spawn.Color = Color3.fromRGB(117, 78, 49)
 	spawn.Anchored = true
 	spawn.Neutral = true
 	spawn.Parent = genFolder
+
+	-- lets a player press e on the platform to see what seed made the island
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Reveal Seed"
+	prompt.ObjectText = "Island Spawn"
+	prompt.HoldDuration = 0.5
+	prompt.Parent = spawn
+	prompt.Triggered:Connect(function(player)
+		print(("%s asked for the seed: %d"):format(player.Name, CONFIG.Seed))
+	end)
+
+	return spawn
 end
 
--- generate terrain first because decorations use raycasts to find the surface
+-- terrain has to be built first so the ray has something to hit
 local function generateIsland()
 	Terrain:Clear()
 
+	local t = CONFIG.Terrain
+	local stats = { Biomes = {}, DecorationCount = 0 }
+	local decoration = Decoration.new(genFolder, rng)
+	-- saves the height and biome for each spot so we dont redo the math later
 	local cellData = {}
 
-	for gx = -CONFIG.GridRadius, CONFIG.GridRadius do
+	for gx = -t.GridRadius, t.GridRadius do
 		cellData[gx] = {}
-
-		for gz = -CONFIG.GridRadius, CONFIG.GridRadius do
-			local x = gx * CONFIG.CellSize
-			local z = gz * CONFIG.CellSize
-
-			if dist(x, z) <= CONFIG.IslandRadius then
-				local h, b = createTerrainCell(x, z)
-				cellData[gx][gz] = { Height = h, Biome = b }
+		for gz = -t.GridRadius, t.GridRadius do
+			local x, z = gx * t.CellSize, gz * t.CellSize
+			if distance2D(x, z) <= t.IslandRadius then
+				local height, biome = createTerrainCell(x, z)
+				cellData[gx][gz] = { Height = height, Biome = biome }
+				stats.Biomes[biome] = (stats.Biomes[biome] or 0) + 1
 			end
 		end
-
-		if gx % CONFIG.ChunkSize == 0 then
-			RunService.Heartbeat:Wait()
-		end
+		if gx % t.ChunkSize == 0 then RunService.Heartbeat:Wait() end
 	end
 
-	for gx = -CONFIG.GridRadius, CONFIG.GridRadius do
-		for gz = -CONFIG.GridRadius, CONFIG.GridRadius do
+	-- skips the edge so props dont spawn right where the land drops off the hardest
+	for gx = -t.GridRadius, t.GridRadius do
+		for gz = -t.GridRadius, t.GridRadius do
 			local cell = cellData[gx][gz]
 			if cell then
-				local x = gx * CONFIG.CellSize
-				local z = gz * CONFIG.CellSize
-				-- doesnt place decorations right on the coastline
-				if dist(x, z) <= CONFIG.IslandRadius * 0.92 then
-					decorateCell(x, z, cell.Height, cell.Biome)
+				local x, z = gx * t.CellSize, gz * t.CellSize
+				if distance2D(x, z) <= t.IslandRadius * CONFIG.Decoration.EdgeExclusionFactor then
+					decorateCell(x, z, cell.Height, cell.Biome, decoration, stats)
 				end
 			end
 		end
-
-		if gx % CONFIG.ChunkSize == 0 then
-			RunService.Heartbeat:Wait()
-		end
+		if gx % t.ChunkSize == 0 then RunService.Heartbeat:Wait() end
 	end
 
 	createWater()
 	createSpawn()
+
+	print(("Island generated with %d decorations"):format(stats.DecorationCount))
+	for biome, count in pairs(stats.Biomes) do
+		print(("  %s: %d cells"):format(biome, count))
+	end
 end
 
 generateIsland()
